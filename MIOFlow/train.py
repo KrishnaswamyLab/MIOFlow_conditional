@@ -55,6 +55,11 @@ def train(
     reverse:bool = False,
     n_conditions:int = 0,
     lambda_cond = 1.0,
+    growth_rate_model=None,
+    ot_lambda_global=None,
+    ot_lambda_local=None,
+    lambda_energy_local=None,
+    lambda_energy_global=None,
 ):
 
     '''
@@ -132,6 +137,15 @@ def train(
 
         reverse (bool): Whether to train time backwards.
     '''
+    if ot_lambda_global is None:
+        ot_lambda_global = {g:1.0 for g in groups}
+    if ot_lambda_local is None:
+        ot_lambda_local = {g:1.0 for g in groups}
+    if lambda_energy_local is None:
+        lambda_energy_local = {g:1.0 for g in groups}
+    if lambda_energy_global is None:
+        lambda_energy_global = {g:1.0 for g in groups}
+
     if autoencoder is None and (use_emb or use_gae):
         use_emb = False
         use_gae = False
@@ -197,21 +211,28 @@ def train(
                     data_t1 = autoencoder.encoder(data_t1)
                 # prediction
                 data_tp = model(data_t0, time)
-
+                
                 if autoencoder is not None and use_emb:        
                     # WARNING: not tested with conditional features
                     data_tp, data_t1 = autoencoder.encoder(data_tp), autoencoder.encoder(data_t1)
+                
+                if growth_rate_model is not None:
+                    source_mass = growth_rate_model(data_t0).flatten()
+                else:
+                    source_mass = None
+                
                 if n_conditions > 0 and lambda_cond > 0:
                     assert isinstance(criterion, OT_loss)
-                    loss, plan = criterion(data_tp, data_t1, return_plan=True)
+                    loss, plan = criterion(data_tp, data_t1, source_mass=source_mass, return_plan=True)
                     # print(data_t0[:,-n_conditions:].shape)
                     # print(data_t1_cond.shape)
+                    loss = loss * ot_lambda_local[t1]
                     loss_cond_change = ot_loss_given_plan(plan, data_t0[:,-n_conditions:], data_t1_cond)
                     loss += lambda_cond * loss_cond_change
                     # print(f'loss_cond_change: {loss_cond_change.item()}')
                 else:   
                     # loss between prediction and sample t1
-                    loss = criterion(data_tp, data_t1)
+                    loss = criterion(data_tp, data_t1, source_mass=source_mass)
 
                 if use_density_loss:                
                     density_loss = density_fn(data_tp, data_t1, top_k=top_k)
@@ -220,7 +241,8 @@ def train(
 
                 if use_penalty:
                     penalty = sum(model.norm)
-                    loss += lambda_energy * penalty
+                    # loss += lambda_energy * penalty
+                    loss += lambda_energy_local[t1] * penalty
 
                 # apply local loss as we calculate it
                 if apply_losses_in_time and local_loss:
@@ -272,6 +294,11 @@ def train(
                 data_tp = [autoencoder.encoder(data) for data in data_tp]
                 data_ti = [autoencoder.encoder(data) for data in data_ti]
 
+            if growth_rate_model is not None:
+                source_masses = [growth_rate_model(data).flatten() for data in data_ti]
+            else:
+                source_masses = [None for _ in data_ti]
+
             #ignoring one time point
             to_ignore = None #TODO: This assignment of `to_ingnore`, could be moved at the beginning of the function. 
             if hold_one_out and hold_out == 'random':
@@ -286,7 +313,7 @@ def train(
             data_ti = [data_ti[i][:,:data_ti[i].shape[1]-n_conditions] for i in range(len(data_ti))] # remove the conditional features
 
             loss = sum([
-                criterion(data_tp[i], data_ti[i]) 
+                ot_lambda_global[i] * criterion(data_tp[i], data_ti[i], source_mass=source_masses[i-1]) # mass predicted using previous time point
                 for i in range(1, len(groups))
                 if groups[i] != to_ignore
             ])
@@ -297,9 +324,10 @@ def train(
                 loss += lambda_density * density_loss
 
             if use_penalty:
-                penalty = sum([model.norm[-(i+1)] for i in range(1, len(groups))
+                penalty = sum([model.norm[-(i+1)] * lambda_energy_global[groups[i]] for i in range(1, len(groups))
                     if groups[i] != to_ignore])
-                loss += lambda_energy * penalty
+                # loss += lambda_energy * penalty / (len(groups) - int(to_ignore is not None))
+                loss += penalty / (len(groups) - int(to_ignore is not None))
                                        
             loss.backward()
             optimizer.step()
@@ -458,8 +486,16 @@ def training_regimen(
     local_losses=None, batch_losses=None, globe_losses=None,
     reverse_schema=True, reverse_n=4,
     n_conditions:int = 0,
-    lambda_cond:float = 0.0
+    lambda_cond:float = 0.0,
+    growth_rate_model=None,
+    lrs=None,
+    ot_lambda_global=None,
+    ot_lambda_local=None,
+    lambda_energy_local=None,
+    lambda_energy_global=None
 ):
+    if lrs is not None:
+        assert len(lrs) == 3
     recon = use_gae and not use_emb
     if steps is None:
         steps = generate_steps(groups)
@@ -487,8 +523,11 @@ def training_regimen(
     
     reverse = False
     for epoch in tqdm(range(n_local_epochs), desc='Pretraining Epoch'):
-        reverse = True if reverse_schema and epoch % reverse_n == 0 else False
+        if lrs is not None:
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lrs[0]
 
+        reverse = True if reverse_schema and epoch % reverse_n == 0 else False
         l_loss, b_loss, g_loss = train(
             model, df, groups, optimizer, n_batches, 
             criterion = criterion, use_cuda = use_cuda,
@@ -501,7 +540,9 @@ def training_regimen(
             sample_with_replacement=sample_with_replacement, logger=logger,
             add_noise=add_noise, noise_scale=noise_scale, use_gaussian=use_gaussian, 
             use_penalty=use_penalty, lambda_energy=lambda_energy, reverse=reverse,
-            n_conditions=n_conditions, lambda_cond=lambda_cond
+            n_conditions=n_conditions, lambda_cond=lambda_cond, growth_rate_model=growth_rate_model,
+            ot_lambda_global=ot_lambda_global, ot_lambda_local=ot_lambda_local,
+            lambda_energy_local=lambda_energy_local, lambda_energy_global=lambda_energy_global
         )
         for k, v in l_loss.items():  
             local_losses[k].extend(v)
@@ -523,6 +564,10 @@ def training_regimen(
             )
 
     for epoch in tqdm(range(n_epochs), desc='Epoch'):
+        if lrs is not None:
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lrs[1]
+
         reverse = True if reverse_schema and epoch % reverse_n == 0 else False
         l_loss, b_loss, g_loss = train(
             model, df, groups, optimizer, n_batches, 
@@ -536,7 +581,9 @@ def training_regimen(
             sample_with_replacement=sample_with_replacement, logger=logger, 
             add_noise=add_noise, noise_scale=noise_scale, use_gaussian=use_gaussian,
             use_penalty=use_penalty, lambda_energy=lambda_energy, reverse=reverse,
-            n_conditions=n_conditions, lambda_cond=lambda_cond
+            n_conditions=n_conditions, lambda_cond=lambda_cond, growth_rate_model=growth_rate_model,
+            ot_lambda_global=ot_lambda_global, ot_lambda_local=ot_lambda_local,
+            lambda_energy_local=lambda_energy_local, lambda_energy_global=lambda_energy_global
         )
         for k, v in l_loss.items():  
             local_losses[k].extend(v)
@@ -558,6 +605,9 @@ def training_regimen(
             )
         
     for epoch in tqdm(range(n_post_local_epochs), desc='Posttraining Epoch'):
+        if lrs is not None:
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lrs[2]
         reverse = True if reverse_schema and epoch % reverse_n == 0 else False
 
         l_loss, b_loss, g_loss = train(
@@ -572,7 +622,9 @@ def training_regimen(
             sample_with_replacement=sample_with_replacement, logger=logger, 
             add_noise=add_noise, noise_scale=noise_scale, use_gaussian=use_gaussian,
             use_penalty=use_penalty, lambda_energy=lambda_energy, reverse=reverse,
-            n_conditions=n_conditions, lambda_cond=lambda_cond
+            n_conditions=n_conditions, lambda_cond=lambda_cond, growth_rate_model=growth_rate_model,
+            ot_lambda_global=ot_lambda_global, ot_lambda_local=ot_lambda_local,
+            lambda_energy_local=lambda_energy_local, lambda_energy_global=lambda_energy_global
         )
         for k, v in l_loss.items():  
             local_losses[k].extend(v)
