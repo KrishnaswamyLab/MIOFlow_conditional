@@ -16,7 +16,7 @@ import torch
 from .utils import sample, generate_steps
 from .losses import MMD_loss, OT_loss, Density_loss, Local_density_loss
 from .losses import ot_loss_given_plan
-
+from .losses import covariance_loss
 def train(
     model, df, groups, optimizer, n_batches=20, 
     criterion=MMD_loss(),
