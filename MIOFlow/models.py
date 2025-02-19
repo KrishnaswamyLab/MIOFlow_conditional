@@ -190,6 +190,15 @@ class ConditionalModel(nn.Module):
        
         x = x[-1] if not return_whole_sequence else x
         return x
+    
+    def train(self, mode=True):
+        # reset the norm
+        super().train(mode)
+        self.norm = []
+
+    def eval(self):
+        super().eval()
+        self.norm = []
 
 # %% ../nbs/03_models.ipynb 5
 import itertools
@@ -388,6 +397,16 @@ class ToyModel(nn.Module):
         x = x[-1] if not return_whole_sequence else x
         return x
 
+    def train(self, mode=True):
+        # reset the norm
+        super().train(mode)
+        self.norm = []
+
+    def eval(self):
+        super().eval()
+        self.norm = []
+
+
 # %% ../nbs/03_models.ipynb 10
 from torchdiffeq import odeint_adjoint as odeint
 import os, math, numpy as np
@@ -449,3 +468,12 @@ class ToySDEModel(nn.Module):
        
         x = x[-1] if not return_whole_sequence else x
         return x
+
+    def train(self, mode=True):
+        # reset the norm
+        super().train(mode)
+        self.norm = []
+
+    def eval(self):
+        super().eval()
+        self.norm = []

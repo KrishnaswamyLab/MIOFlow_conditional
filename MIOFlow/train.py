@@ -60,6 +60,8 @@ def train(
     ot_lambda_local=None,
     lambda_energy_local=None,
     lambda_energy_global=None,
+    coef_energy_func=1.0,
+    coef_energy_gunc=1.0,
 ):
 
     '''
@@ -137,6 +139,7 @@ def train(
 
         reverse (bool): Whether to train time backwards.
     '''
+    norm_sample = 100
     if ot_lambda_global is None:
         ot_lambda_global = {g:1.0 for g in groups}
     if ot_lambda_local is None:
@@ -240,7 +243,11 @@ def train(
                     loss += lambda_density * density_loss
 
                 if use_penalty:
-                    penalty = sum(model.norm)
+                    # DEPRECATED, this is just one point, so incorrect.
+                    penalty = sum(model.norm) # TODO is this correct?
+                    # time_points = torch.linspace(t0, t1, norm_sample, dtype=data_t0.dtype, device=data_t0.device)
+                    # dxdt = model.func(time_points, data_t0)
+
                     # loss += lambda_energy * penalty
                     loss += lambda_energy_local[t1] * penalty
 
