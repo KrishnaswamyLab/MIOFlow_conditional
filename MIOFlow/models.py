@@ -47,9 +47,18 @@ class ToyODE(nn.Module):
 
         self.chain = chain
         self.seq = (nn.Sequential(*chain))
-        
+        # self.initialize_final_layer()
+
         self.alpha = nn.Parameter(torch.tensor(scales, requires_grad=True).float()) if scales is not None else None
-        self.n_aug = n_aug        
+        self.n_aug = n_aug    
+
+    # def initialize_final_layer(self):
+    #     # For the final layer of fc_g, use Xavier uniform initialization for weights
+    #     # and set the bias to a small positive constant (e.g., 0.1)
+    #     final_layer = self.seq[-1]
+    #     if isinstance(final_layer, nn.Linear):
+    #         nn.init.xavier_uniform_(final_layer.weight)
+    #         nn.init.constant_(final_layer.bias, 0.1)    
         
     def forward(self, t, x): #NOTE the forward pass when we use torchdiffeq must be forward(self,t,x)
         zero = torch.tensor([0]).cuda() if x.is_cuda else torch.tensor([0])
@@ -181,6 +190,15 @@ class ConditionalModel(nn.Module):
        
         x = x[-1] if not return_whole_sequence else x
         return x
+    
+    def train(self, mode=True):
+        # reset the norm
+        super().train(mode)
+        self.norm = []
+
+    def eval(self):
+        super().eval()
+        self.norm = []
 
 # %% ../nbs/03_models.ipynb 5
 import itertools
@@ -228,6 +246,7 @@ def make_model(
     scales=None,
     n_aug=2,
     noise_type='diagonal', sde_type='ito',
+    adjoint_method=None,
     use_norm=False,
     use_cuda=False,
     in_features=2, out_features=2, gunc=None,
@@ -245,10 +264,13 @@ def make_model(
         model = ConditionalModel(ode, method, rtol, atol, use_norm=use_norm)
     elif which == 'sde':
         ode = ToyODE(feature_dims, layers, activation,scales,n_aug)
+        gunc = ToyODE(feature_dims, layers, activation,scales,n_aug)
         model = ToySDEModel(
             ode, method, noise_type, sde_type,
-            in_features=in_features, out_features=out_features, gunc=gunc
-            
+            in_features=in_features, out_features=out_features, 
+            gunc=gunc, 
+            adjoint_method=adjoint_method, 
+            use_norm=use_norm
         )
     else:
         model = ToyGeo(feature_dims, layers, output_dims, activation)
@@ -375,6 +397,16 @@ class ToyModel(nn.Module):
         x = x[-1] if not return_whole_sequence else x
         return x
 
+    def train(self, mode=True):
+        # reset the norm
+        super().train(mode)
+        self.norm = []
+
+    def eval(self):
+        super().eval()
+        self.norm = []
+
+
 # %% ../nbs/03_models.ipynb 10
 from torchdiffeq import odeint_adjoint as odeint
 import os, math, numpy as np
@@ -397,12 +429,15 @@ class ToySDEModel(nn.Module):
     """
     
     def __init__(self, func, method='euler', noise_type='diagonal', sde_type='ito', 
-    in_features=2, out_features=2, gunc=None, dt=0.1):
+    in_features=2, out_features=2, gunc=None, dt=0.1, adjoint_method=None, use_norm=False):
         super(ToySDEModel, self).__init__()        
         self.func = func
         self.method = method
         self.noise_type = noise_type
         self.sde_type = sde_type
+        self.adjoint_method = adjoint_method
+        self.use_norm = use_norm
+        self.norm = []
         if gunc is None:
             self._gunc_args = 'y'
             self.gunc = nn.Linear(in_features, out_features)
@@ -417,11 +452,28 @@ class ToySDEModel(nn.Module):
 
     def g(self, t, y):
         return self.gunc(t, y) if self._gunc_args == 't,y' else self.gunc(y)
-        return 0.3 * torch.sigmoid(torch.cos(t) * torch.exp(-y))
 
     def forward(self, x, t, return_whole_sequence=False, dt=None):
+        if self.use_norm:
+            for time in t: 
+                f_norm = torch.linalg.norm(self.func(time,x)).pow(2)
+                g_norm = torch.linalg.norm(self.gunc(time,x)).pow(2)
+                self.norm.append(f_norm + g_norm)
+            
         dt = self.dt if self.dt is not None else 0.1 if dt is None else dt        
-        x = torchsde.sdeint(self, x, t, method=self.method, dt=dt)
+        if self.adjoint_method is not None:
+            x = torchsde.sdeint_adjoint(self, x, t, method=self.method, adjoint_method=self.adjoint_method, dt=dt)
+        else:
+            x = torchsde.sdeint(self, x, t, method=self.method, dt=dt)
        
         x = x[-1] if not return_whole_sequence else x
         return x
+
+    def train(self, mode=True):
+        # reset the norm
+        super().train(mode)
+        self.norm = []
+
+    def eval(self):
+        super().eval()
+        self.norm = []
