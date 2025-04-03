@@ -9,6 +9,10 @@ import itertools
 from torch.nn  import functional as F 
 import torch.nn as nn
 import torch
+
+
+
+
 class ToyODE(nn.Module):
     """ 
     ODE derivative network
@@ -110,6 +114,7 @@ class ConditionalODE(nn.Module):
         scales=None,
         n_aug=2,
         time_homogeneous=True,
+        momentum_beta = 0.2,
     ):
         super(ConditionalODE, self).__init__()
         self.time_homogeneous = time_homogeneous
@@ -127,7 +132,9 @@ class ConditionalODE(nn.Module):
         self.seq = (nn.Sequential(*chain))
         
         self.alpha = nn.Parameter(torch.tensor(scales, requires_grad=True).float()) if scales is not None else None
-        self.n_aug = n_aug        
+        self.n_aug = n_aug
+        self.momentum_beta = momentum_beta
+        self.previous_v = None
         
     def set_condition(self, condition):
         self.condition = condition
@@ -137,10 +144,18 @@ class ConditionalODE(nn.Module):
         zeros = zero.repeat(x.size()[0],self.n_aug)
         time = t.repeat(x.size()[0],self.time_dim)
         aug = torch.cat((x,self.condition,time,zeros),dim=1)
-        x = self.seq(aug)
+        
+        dxdt = self.seq(aug)
         if self.alpha is not None:
             z = torch.randn(x.size(),requires_grad=False).cuda() if x.is_cuda else torch.randn(x.size(),requires_grad=False)
-        dxdt = x + z*self.alpha[int(t-1)] if self.alpha is not None else x
+        dxdt = dxdt + z*self.alpha[int(t-1)] if self.alpha is not None else x
+        
+        if self.momentum_beta > 0.0:
+            if self.previous_v is None or self.previous_v.shape[0] != x.shape[0]:
+                self.previous_v = torch.zeros_like(dxdt)
+
+            dxdt = self.momentum_beta * self.previous_v + (1 - self.momentum_beta) * dxdt
+            self.previous_v = dxdt.detach()  # Update for next step 
         return dxdt
     
 
@@ -251,6 +266,7 @@ def make_model(
     use_cuda=False,
     in_features=2, out_features=2, gunc=None,
     n_conditions=0,
+    momentum_beta = 0.2,
 ):
     """
     Creates the 'ode' model or 'sde' model or the Geodesic Autoencoder. 
@@ -260,7 +276,7 @@ def make_model(
         ode = ToyODE(feature_dims, layers, activation,scales,n_aug)
         model = ToyModel(ode,method,rtol, atol, use_norm=use_norm)
     elif which == 'ode' and n_conditions > 0:
-        ode = ConditionalODE(feature_dims, n_conditions, layers, activation, scales, n_aug)
+        ode = ConditionalODE(feature_dims, n_conditions, layers, activation, scales, n_aug, momentum_beta = momentum_beta)
         model = ConditionalModel(ode, method, rtol, atol, use_norm=use_norm)
     elif which == 'sde':
         ode = ToyODE(feature_dims, layers, activation,scales,n_aug)
