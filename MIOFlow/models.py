@@ -38,7 +38,8 @@ class ToyODE(nn.Module):
         layers=[64],
         activation='ReLU',
         scales=None,
-        n_aug=2
+        n_aug=2,
+        momentum_beta = 0.0
     ):
         super(ToyODE, self).__init__()
         steps = [feature_dims+1+n_aug, *layers, feature_dims]
@@ -54,7 +55,10 @@ class ToyODE(nn.Module):
         # self.initialize_final_layer()
 
         self.alpha = nn.Parameter(torch.tensor(scales, requires_grad=True).float()) if scales is not None else None
-        self.n_aug = n_aug    
+        self.n_aug = n_aug  
+        
+        self.momentum_beta = momentum_beta
+        self.previous_v = None
 
     # def initialize_final_layer(self):
     #     # For the final layer of fc_g, use Xavier uniform initialization for weights
@@ -69,10 +73,17 @@ class ToyODE(nn.Module):
         zeros = zero.repeat(x.size()[0],self.n_aug)
         time = t.repeat(x.size()[0],1)
         aug = torch.cat((x,time,zeros),dim=1)
-        x = self.seq(aug)
+        dxdt = self.seq(aug)
         if self.alpha is not None:
             z = torch.randn(x.size(),requires_grad=False).cuda() if x.is_cuda else torch.randn(x.size(),requires_grad=False)
-        dxdt = x + z*self.alpha[int(t-1)] if self.alpha is not None else x
+        dxdt = dxdt + z*self.alpha[int(t-1)] if self.alpha is not None else x
+        
+        if self.momentum_beta > 0.0:
+            if self.previous_v is None or self.previous_v.shape[0] != x.shape[0]:
+                self.previous_v = torch.zeros_like(dxdt)
+
+            dxdt = self.momentum_beta * self.previous_v + (1 - self.momentum_beta) * dxdt
+            self.previous_v = dxdt.detach()
         return dxdt
 
 # %% ../nbs/03_models.ipynb 4
@@ -114,7 +125,7 @@ class ConditionalODE(nn.Module):
         scales=None,
         n_aug=2,
         time_homogeneous=True,
-        momentum_beta = 0.2,
+        momentum_beta = 0.0,
     ):
         super(ConditionalODE, self).__init__()
         self.time_homogeneous = time_homogeneous
@@ -266,7 +277,7 @@ def make_model(
     use_cuda=False,
     in_features=2, out_features=2, gunc=None,
     n_conditions=0,
-    momentum_beta = 0.2,
+    momentum_beta = 0.0,
 ):
     """
     Creates the 'ode' model or 'sde' model or the Geodesic Autoencoder. 
@@ -279,7 +290,7 @@ def make_model(
         ode = ConditionalODE(feature_dims, n_conditions, layers, activation, scales, n_aug, momentum_beta = momentum_beta)
         model = ConditionalModel(ode, method, rtol, atol, use_norm=use_norm)
     elif which == 'sde':
-        ode = ToyODE(feature_dims, layers, activation,scales,n_aug)
+        ode = ToyODE(feature_dims, layers, activation,scales,n_aug, momentum_beta = momentum_beta)
         gunc = ToyODE(feature_dims, layers, activation,scales,n_aug)
         model = ToySDEModel(
             ode, method, noise_type, sde_type,
