@@ -9,10 +9,6 @@ import itertools
 from torch.nn  import functional as F 
 import torch.nn as nn
 import torch
-
-
-
-
 class ToyODE(nn.Module):
     """ 
     ODE derivative network
@@ -56,7 +52,7 @@ class ToyODE(nn.Module):
 
         self.alpha = nn.Parameter(torch.tensor(scales, requires_grad=True).float()) if scales is not None else None
         self.n_aug = n_aug  
-        
+
         self.momentum_beta = momentum_beta
         self.previous_v = None
 
@@ -76,8 +72,8 @@ class ToyODE(nn.Module):
         dxdt = self.seq(aug)
         if self.alpha is not None:
             z = torch.randn(x.size(),requires_grad=False).cuda() if x.is_cuda else torch.randn(x.size(),requires_grad=False)
-        dxdt = dxdt + z*self.alpha[int(t-1)] if self.alpha is not None else x
-        
+            dxdt = dxdt + z*self.alpha[int(t-1)]
+
         if self.momentum_beta > 0.0:
             if self.previous_v is None or self.previous_v.shape[0] != x.shape[0]:
                 self.previous_v = torch.zeros_like(dxdt)
@@ -159,8 +155,8 @@ class ConditionalODE(nn.Module):
         dxdt = self.seq(aug)
         if self.alpha is not None:
             z = torch.randn(x.size(),requires_grad=False).cuda() if x.is_cuda else torch.randn(x.size(),requires_grad=False)
-        dxdt = dxdt + z*self.alpha[int(t-1)] if self.alpha is not None else x
-        
+            dxdt = dxdt + z*self.alpha[int(t-1)]
+
         if self.momentum_beta > 0.0:
             if self.previous_v is None or self.previous_v.shape[0] != x.shape[0]:
                 self.previous_v = torch.zeros_like(dxdt)
@@ -287,10 +283,10 @@ def make_model(
         ode = ToyODE(feature_dims, layers, activation,scales,n_aug)
         model = ToyModel(ode,method,rtol, atol, use_norm=use_norm)
     elif which == 'ode' and n_conditions > 0:
-        ode = ConditionalODE(feature_dims, n_conditions, layers, activation, scales, n_aug, momentum_beta = momentum_beta)
+        ode = ConditionalODE(feature_dims, n_conditions, layers, activation, scales, n_aug, momentum_beta=momentum_beta)
         model = ConditionalModel(ode, method, rtol, atol, use_norm=use_norm)
     elif which == 'sde':
-        ode = ToyODE(feature_dims, layers, activation,scales,n_aug, momentum_beta = momentum_beta)
+        ode = ToyODE(feature_dims, layers, activation,scales,n_aug, momentum_beta=momentum_beta)
         gunc = ToyODE(feature_dims, layers, activation,scales,n_aug)
         model = ToySDEModel(
             ode, method, noise_type, sde_type,
