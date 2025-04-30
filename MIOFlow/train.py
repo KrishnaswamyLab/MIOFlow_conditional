@@ -53,7 +53,7 @@ def train(
     lambda_energy=1.0,
 
     reverse:bool = False,
-    n_conditions:int = 0,
+    n_conditions:int = 0,  # TODO deprecated! now will extract from model.func.condition_dim!
     lambda_cond = 1.0,
     growth_rate_model=None,
     ot_lambda_global=None,
@@ -139,7 +139,7 @@ def train(
 
         reverse (bool): Whether to train time backwards.
     '''
-    norm_sample = 100
+    n_conditions = model.func.condition_dim
     if ot_lambda_global is None:
         ot_lambda_global = {g:1.0 for g in groups}
     if ot_lambda_local is None:
@@ -492,7 +492,7 @@ def training_regimen(
     n_points=100, n_trajectories=100, n_bins=100, 
     local_losses=None, batch_losses=None, globe_losses=None,
     reverse_schema=True, reverse_n=4,
-    n_conditions:int = 0,
+    n_conditions:int = 0, # TODO deprecated! now will extract from model.func.condition_dim!
     lambda_cond:float = 0.0,
     growth_rate_model=None,
     lrs=None,
